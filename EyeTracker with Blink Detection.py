@@ -7,18 +7,20 @@ Created on Sun Aug 12 18:58:24 2018
 
 from imutils.video import VideoStream
 from imutils import face_utils
-from scipy.spatial import distance as dist
 import imutils
+import pyautogui
+from scipy.spatial import distance as dist
 import time
 import dlib
 import cv2
 import numpy as np
 
-EYE_AR_THRESH = 0.2
+EYE_AR_THRESH = 0.25
 EYE_AR_CONSEC_FRAMES = 10
+EAR = 0
 COUNTER = 0
-numerator = 0
-denominator = 0
+successful = 0
+unsuccessful = 0
 cx = 0
 cy = 0
 
@@ -44,30 +46,31 @@ def get_face_shape(rects, frame):
         print(e)
         pass
 
+
 def get_eye_box(frame, shape, i):
     #Adjustment factor
     epsilon = 5
     
     #Eye Bounding Box
     eyeX = shape[i][0] - epsilon
-    eyeY = int((shape[i+1][1] + shape[i+2][1])/2) - epsilon
+    eyeY = int(shape[i][1] - (abs(shape[i+3][0] - shape[i][0]))/4) - epsilon
     eyeW = shape[i+3][0] - shape[i][0] + 2*epsilon
-    eyeH = int((shape[i+4][1]+shape[i+5][1])/2 - (shape[i+1][1] + shape[i+2][1])/2) + 2*epsilon
+    eyeH = int((abs(shape[i+3][0] - shape[i][0]))/2) + 2*epsilon
             
     eye_box = frame[eyeY:eyeY + eyeH, eyeX:eyeX + eyeW]
     
     #Drawing bounding box
     cv2.rectangle(frame, (eyeX, eyeY), (eyeX + eyeW, eyeY + eyeH), (0, 255, 0), 1)
     
-    return eye_box
+    return eye_box, eyeW, eyeH
+
 
 def find_centroid(eye):
     gray = cv2.cvtColor(eye,cv2.COLOR_BGR2GRAY)
     equ = cv2.equalizeHist(gray)
     thres = cv2.inRange(equ,0,20)
     kernel = np.ones((3,3),np.uint8)
-    global cx, cy
-    global numerator, denominator
+    global cx, cy, successful, unsuccessful
     
     #Denoising the ROI
     dilation = cv2.dilate(thres,kernel,iterations = 2)
@@ -78,7 +81,7 @@ def find_centroid(eye):
     image, contours, hierarchy = cv2.findContours(erosion,cv2.RETR_TREE,cv2.CHAIN_APPROX_NONE)
     
     if len(contours)==2 :
-        numerator += 1
+        successful += 1
         M = cv2.moments(contours[1])
         if M['m00']!=0:
             cx = int(M['m10']/M['m00'])
@@ -86,7 +89,7 @@ def find_centroid(eye):
             cv2.line(eye,(cx,cy),(cx,cy),(0,0,255),3)
 
     elif len(contours)==1:
-        numerator += 1              
+        successful += 1              
         M = cv2.moments(contours[0])
         if M['m00']!=0:
             cx = int(M['m10']/M['m00'])
@@ -94,7 +97,7 @@ def find_centroid(eye):
             cv2.line(eye,(cx,cy),(cx,cy),(0,0,255),3)
                          
     else:
-        denominator += 1
+        unsuccessful += 1
         
     return cx, cy
 
@@ -109,26 +112,68 @@ def eye_aspect_ratio(eye):
 	return ear
 
 
-def check_blink(eye_points):
-    global COUNTER
+def check_blink(eye_points, direction):
+    global COUNTER, EAR
     EAR = eye_aspect_ratio(eye_points)
     
     if EAR < EYE_AR_THRESH:
         COUNTER += 1
     else:
         if COUNTER >= EYE_AR_CONSEC_FRAMES:
-            print("Eye blinked")
+            print("Eye blinked on ", direction)
+
+            if direction == 1:
+                pyautogui.press('left')
+                
+            elif direction == 2:
+                pyautogui.press('right')
+                
+            else:
+                pyautogui.press('space')
+                
             COUNTER = 0
+        else:
+            COUNTER = 0
+
+
+def move_cursor(cx, cy, eyeW, eyeH):
+    
+    direction = 0
+    window_width, window_height = pyautogui.size()
+    
+    width_ratio = window_width/eyeW
+    height_ratio = window_height/eyeH
+       
+    screenX = int(width_ratio * cx)
+    screenY = int(height_ratio * cy)
+    
+    if( screenX < window_width * 0.4):
+        print("looking left", screenX, screenY)
+        direction = 1
+        
+    elif( screenX > window_width * 0.6):
+        print("looking right", screenX, screenY)
+        direction = 2
+        
+    else:
+        print("Centered", screenX, screenY)
+        direction = 0
+        
+#    print(eyeW, eyeH, screenX, screenY)   
+#    print(window_width, window_height, width_ratio, height_ratio)
+    
+    return direction
 
 
 def main():
     vs = VideoStream(src=1).start()
     time.sleep(1.0)
+    direction = 0
     
     while True:
         frame = vs.read()
         frame = cv2.flip(frame, 1)        
-        frame = imutils.resize(frame, width=400)
+        frame = imutils.resize(frame, width=600)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
         rects = detector(gray, 0)
@@ -136,25 +181,31 @@ def main():
         shape = get_face_shape(rects, gray)
         
         if shape is not None:
-            l_eye = get_eye_box(frame, shape, 36)
+            l_eye, eyeW, eyeH = get_eye_box(frame, shape, 36)
 #            r_eye = get_eye_box(frame, shape, 42)
             
-            cnx, cny = find_centroid(l_eye)   
-            print(cnx, cny)
-            
-            leftEye = shape[rStart:rEnd]
+            leftEye = shape[lStart:lEnd]
 #            rightEye = shape[lStart:lEnd]
-            check_blink(leftEye)
-
+            check_blink(leftEye, direction)
+#            print(COUNTER)
+            
+            if(EAR > EYE_AR_THRESH):
+                cnx, cny = find_centroid(l_eye)
+    #            print(cnx, cny)
+                
+                direction = move_cursor(cnx, cny, eyeW, eyeH)
+    #            control(cnx, cny, eyeW, eyeH)
+            
             
         cv2.imshow("Frame", frame)        
         key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
+        if key == ord("q") or key == ord("Q"):
             break
         
-    print ("accurracy=",(float(numerator)/float(numerator+denominator))*100)
+    print ("Accurracy = ",(float(successful)/float(successful+unsuccessful))*100)
     vs.stop()
     cv2.destroyAllWindows()
-       
+
+      
 if __name__ == "__main__":
     main()
